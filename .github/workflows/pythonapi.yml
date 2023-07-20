@@ -20,8 +20,8 @@ name: Deploy Python API
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches:
+    - main
 
 env:
   #AZURE_FUNCTIONAPP_NAME: 'dataaichatpdf'   # set this to your function app name on Azure
@@ -36,10 +36,11 @@ jobs:
     - name: 'Checkout GitHub Action'
       uses: actions/checkout@v3
 
-    - name: 'Login via Azure CLI'
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_RBAC_CREDENTIALS }} # set up AZURE_RBAC_CREDENTIALS secrets in your repository
+    # If you want to use Azure RBAC instead of Publish Profile, then uncomment the task below
+    # - name: 'Login via Azure CLI'
+    #   uses: azure/login@v1
+    #   with:
+    #     creds: ${{ secrets.AZURE_RBAC_CREDENTIALS }} # set up AZURE_RBAC_CREDENTIALS secrets in your repository
 
     - name: Setup Python ${{ env.PYTHON_VERSION }} Environment
       uses: actions/setup-python@v4
@@ -60,5 +61,6 @@ jobs:
       with:
         app-name: ${{ secrets.AZURE_FUNCTIONAPP_NAME }}
         package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }} # Remove publish-profile to use Azure RBAC
         scm-do-build-during-deployment: true
         enable-oryx-build: true
