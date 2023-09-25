@@ -1,8 +1,6 @@
 import openai
 from Utilities.envVars import *
 from langchain.chains.qa_with_sources import load_qa_with_sources_chain
-from langchain.llms.openai import AzureOpenAI, OpenAI
-from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.docstore.document import Document
 from langchain.prompts import PromptTemplate
 from langchain.utilities import BingSearchAPIWrapper
@@ -18,6 +16,7 @@ from datetime import timedelta
 from Utilities.pibCopilot import indexDocs, createPressReleaseIndex, findEarningCalls, mergeDocs, createPibIndex, findPibData, performEarningCallCogSearch
 from Utilities.pibCopilot import deletePibData, findEarningCallsBySymbol
 from Utilities.pibCopilot import indexEarningCallSections, createEarningCallVectorIndex, createEarningCallIndex, performCogSearch, createSecFilingIndex, findSecFiling
+from Utilities.pibCopilot import findLatestSecFilings, indexSecFilingsSections, createSecFilingsVectorIndex
 import typing
 from Utilities.fmp import *
 from langchain.chat_models import AzureChatOpenAI, ChatOpenAI
@@ -27,6 +26,10 @@ import azure.functions as func
 import time
 from Utilities.cogSearchRetriever import CognitiveSearchRetriever
 from langchain.chains import RetrievalQA
+from langchain.chains import LLMChain
+from Utilities.azureBlob import upsertMetadata, getBlob, getFullPath, copyBlob, copyS3Blob
+import tempfile
+from langchain.document_loaders import PDFMinerLoader
 
 def processStep1(pibIndexName, cik, step, symbol, temperature, llm, today):
     s1Data = []
@@ -70,15 +73,11 @@ def processStep1(pibIndexName, cik, step, symbol, temperature, llm, today):
                 Rephrase the following question asked by user to perform intelligent internet search
                 {query}
                 """
-            optimizedPrompt = qaPromptTemplate.format(query=query)
-            completion = openai.Completion.create(
-                        engine=OpenAiDavinci,
-                        prompt=optimizedPrompt,
-                        temperature=temperature,
-                        max_tokens=100,
-                        n=1)
-            q = completion.choices[0].text
-            bingSearch = BingSearchAPIWrapper(k=25)
+            
+            qaPrompt = PromptTemplate(input_variables=["query"],template=qaPromptTemplate)
+            chain = LLMChain(llm=llm, prompt=qaPrompt)
+            q = chain.run(query=query)
+            bingSearch = BingSearchAPIWrapper(k=20)
             results = bingSearch.run(query=q)
             logging.info(f"Generate Summary for {q}")
             chain = load_summarize_chain(llm, chain_type="stuff")
@@ -134,14 +133,9 @@ def processStep1(pibIndexName, cik, step, symbol, temperature, llm, today):
                         Rephrase the following question asked by user to perform intelligent internet search
                         {query}
                         """
-                    optimizedPrompt = qaPromptTemplate.format(query=query)
-                    completion = openai.Completion.create(
-                                engine=OpenAiDavinci,
-                                prompt=optimizedPrompt,
-                                temperature=temperature,
-                                max_tokens=100,
-                                n=1)
-                    q = completion.choices[0].text
+                    qaPrompt = PromptTemplate(input_variables=["query"],template=qaPromptTemplate)
+                    chain = LLMChain(llm=llm, prompt=qaPrompt)
+                    q = chain.run(query=query)
                     bingSearch = BingSearchAPIWrapper(k=25)
                     results = bingSearch.run(query=q)
                     logging.info(f"Generate Summary for {q}")
@@ -221,44 +215,48 @@ def getEarningCalls(totalYears, historicalYear, symbol, today):
         createEarningCallIndex(SearchService, SearchKey, earningIndexName)
         # Get the list of all earning calls available
         earningCallDates = earningCallsAvailableDates(apikey=FmpKey, symbol=symbol)
-        quarter = earningCallDates[0][0]
-        year = earningCallDates[0][1]
-        r = findEarningCalls(SearchService, SearchKey, earningIndexName, symbol, str(quarter), str(year), returnFields=['id', 'symbol', 
-                            'quarter', 'year', 'callDate', 'content'])
-        if r.get_count() == 0:
-            insertEarningCall = []
-            earningTranscript = earningCallTranscript(apikey=FmpKey, symbol=symbol, year=str(year), quarter=quarter)
-            for transcript in earningTranscript:
-                symbol = transcript['symbol']
-                quarter = transcript['quarter']
-                year = transcript['year']
-                callDate = transcript['date']
-                content = transcript['content']
-                id = f"{symbol}-{year}-{quarter}"
-                earningRecord = {
-                    "id": id,
-                    "symbol": symbol,
-                    "quarter": str(quarter),
-                    "year": str(year),
-                    "callDate": callDate,
-                    "content": content,
-                    #"inserteddate": datetime.now(central).strftime("%Y-%m-%d"),
-                }
-                earningsData.append(earningRecord)
-                insertEarningCall.append(earningRecord)
-                mergeDocs(SearchService, SearchKey, earningIndexName, insertEarningCall)
-        else:
-            logging.info(f"Found {r.get_count()} records for {symbol} for {quarter} {str(year)}")
-            for s in r:
-                record = {
-                        'id' : s['id'],
-                        'symbol': s['symbol'],
-                        'quarter': s['quarter'],
-                        'year': s['year'],
-                        'callDate': s['callDate'],
-                        'content': s['content']
+        if len(earningCallDates) > 0:
+            quarter = earningCallDates[0][0]
+            year = earningCallDates[0][1]
+            r = findEarningCalls(SearchService, SearchKey, earningIndexName, symbol, str(quarter), str(year), returnFields=['id', 'symbol', 
+                                'quarter', 'year', 'callDate', 'content'])
+            if r.get_count() == 0:
+                insertEarningCall = []
+                earningTranscript = earningCallTranscript(apikey=FmpKey, symbol=symbol, year=str(year), quarter=quarter)
+                for transcript in earningTranscript:
+                    symbol = transcript['symbol']
+                    quarter = transcript['quarter']
+                    year = transcript['year']
+                    callDate = transcript['date']
+                    content = transcript['content']
+                    id = f"{symbol}-{year}-{quarter}"
+                    earningRecord = {
+                        "id": id,
+                        "symbol": symbol,
+                        "quarter": str(quarter),
+                        "year": str(year),
+                        "callDate": callDate,
+                        "content": content,
+                        #"inserteddate": datetime.now(central).strftime("%Y-%m-%d"),
                     }
-                earningsData.append(record)
+                    earningsData.append(earningRecord)
+                    insertEarningCall.append(earningRecord)
+                    mergeDocs(SearchService, SearchKey, earningIndexName, insertEarningCall)
+            else:
+                logging.info(f"Found {r.get_count()} records for {symbol} for {quarter} {str(year)}")
+                for s in r:
+                    record = {
+                            'id' : s['id'],
+                            'symbol': s['symbol'],
+                            'quarter': s['quarter'],
+                            'year': s['year'],
+                            'callDate': s['callDate'],
+                            'content': s['content']
+                        }
+                    earningsData.append(record)
+        else:
+            logging.info(f"No earning calls found for {symbol}")
+            return earningsData
                 
         logging.info(f"Total records found for {symbol} : {len(earningsData)}")
 
@@ -298,7 +296,7 @@ def getPressReleases(today, symbol):
 # Helper function to find the answer to a question
 def findAnswer(chainType, topK, symbol, quarter, year, question, indexName, embeddingModelType, llm):
     # Since we already index our document, we can perform the search on the query to retrieve "TopK" documents
-    r = performEarningCallCogSearch(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey, embeddingModelType, 
+    r = performEarningCallCogSearch(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey, embeddingModelType, 
         OpenAiEmbedding, symbol, str(quarter), str(year), question, indexName, topK, returnFields=['id', 'symbol', 'quarter', 'year', 'callDate', 'content'])
 
     if r == None:
@@ -387,12 +385,13 @@ def processStep2(pibIndexName, cik, step, symbol, llm, today, embeddingModelType
             logging.info("Number of documents chunks generated from Call transcript : " + str(len(docs)))
         except Exception as e:
             logging.info("Error in splitting the earning call transcript : ", e)
+            return s2Data, content, latestCallDate
 
         # Store the last index of the earning call transcript in vector Index
         earningVectorIndexName = 'latestearningcalls'
         createEarningCallVectorIndex(SearchService, SearchKey, earningVectorIndexName)
         # Check if we already have the data store, if not then create it
-        indexEarningCallSections(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey,
+        indexEarningCallSections(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey,
                                 embeddingModelType, OpenAiEmbedding, earningVectorIndexName, docs,
                                 latestCallDate, latestEarningsData['symbol'], latestEarningsData['year'],
                                 latestEarningsData['quarter'])
@@ -464,9 +463,12 @@ def processStep2(pibIndexName, cik, step, symbol, llm, today, embeddingModelType
             formattedOutput.remove("")
         for summary in formattedOutput:
             splitSummary = summary.split(":")
-            question = splitSummary[0]
-            answer = splitSummary[1]
-            earningCallQa.append({"question": question, "answer": answer})
+            try:
+                question = splitSummary[0]
+                answer = splitSummary[1]
+                earningCallQa.append({"question": question, "answer": answer})
+            except:
+                continue
 
         s2Data.append({
                     'id' : str(uuid.uuid4()),
@@ -476,7 +478,40 @@ def processStep2(pibIndexName, cik, step, symbol, llm, today, embeddingModelType
                     'description': 'Earning Call Q&A',
                     'insertedDate': today.strftime("%Y-%m-%d"),
                     'pibData' : str(earningCallQa)
-            })
+        })
+
+        promptTemplate = """You are an AI assistant tasked with summarizing financial information from earning call transcript. 
+        Your summary should accurately capture the key information in the document while avoiding the omission of any domain-specific words. 
+        Please generate a concise and comprehensive summary between 5-7 paragraphs and maintain the continuity.  
+        Ensure your summary includes the key information from the transcript like future outlook, business risk, 
+        management concerns.
+        {text}
+            """
+        customPrompt = PromptTemplate(template=promptTemplate, input_variables=["text"])
+        logging.info("Starting latest earning call transcript summarization - Stuff or MapReduce")
+        try:
+            chainType = "stuff"
+            summaryChain = load_summarize_chain(llm, chain_type=chainType, prompt=customPrompt)
+            summaryOutput = summaryChain({"input_documents": docs}, return_only_outputs=True)
+            output = summaryOutput['output_text']
+            logging.info("Completed latest earning call transcript summarization - Stuff")
+        except:
+            chainType = "map_reduce"
+            summaryChain = load_summarize_chain(llm, chain_type=chainType, combine_prompt=customPrompt)
+            summaryOutput = summaryChain({"input_documents": docs}, return_only_outputs=True)
+            output = summaryOutput['output_text']
+            logging.info("Completed latest earning call transcript summarization - MapReduce")
+        
+        s2Data.append({
+                    'id' : str(uuid.uuid4()),
+                    'symbol': symbol,
+                    'cik': cik,
+                    'step': step,
+                    'description': 'Earning Call Summary',
+                    'insertedDate': today.strftime("%Y-%m-%d"),
+                    'pibData' : str([{"summary": output}])
+        })
+
         mergeDocs(SearchService, SearchKey, pibIndexName, s2Data)
     else:
         logging.info('Found existing data')
@@ -540,19 +575,25 @@ def processStep3(symbol, cik, step, llm, pibIndexName, today):
 
         pressReleasesPib = []
         last25PressReleases = pressReleasesList[:25]
+        last25PressReleasesDocs = pressReleasesDocs[:25]
         i = 0
-        for pDocs in pressReleasesDocs:
-            logging.info("Processing Press Release: " + str(i))
-            outputAnswer = summarizePressReleases(llm, [pDocs])
-            jsonStep = json.loads(outputAnswer)
-            pressReleasesPib.append({
-                    "releaseDate": last25PressReleases[i]['releaseDate'],
-                    "title": last25PressReleases[i]['title'],
-                    "summary": jsonStep['summary'],
-                    "sentiment": jsonStep['sentiment'],
-                    "sentimentScore": jsonStep['sentiment score']
-            })
-            i = i + 1
+        for pDocs in last25PressReleasesDocs:
+            try:
+                logging.info("Processing Press Release: " + str(i))
+                outputAnswer = summarizePressReleases(llm, [pDocs])
+                jsonStep = json.loads(outputAnswer)
+                pressReleasesPib.append({
+                        "releaseDate": last25PressReleases[i]['releaseDate'],
+                        "title": last25PressReleases[i]['title'],
+                        "summary": jsonStep['summary'],
+                        "sentiment": jsonStep['sentiment'],
+                        "sentimentScore": jsonStep['sentiment score']
+                })
+                i = i + 1
+            except:
+                logging.info("Error processing Press Release: " + str(i))
+                i = i + 1
+                continue
 
         # We are deleting the data as the Press-releases could be dynamic and we want the latest data
         # deletePibData(SearchService, SearchKey, pibIndexName, cik, step, returnFields=['id', 'symbol', 'cik', 'step', 'description', 'insertedDate',
@@ -715,145 +756,203 @@ def processStep4(symbol, cik, filingType, historicalYear, currentYear, embedding
                                                                    'pibData'])
     secFilingIndexName = 'secdata'
     secFilingsListResp = secFilings(apikey=FmpKey, symbol=ticker, filing_type=filingType)
-    latestFilingDateTime = datetime.strptime(secFilingsListResp[0]['fillingDate'], '%Y-%m-%d %H:%M:%S')
-    logging.info("Latest Filing Date : " + str(latestFilingDateTime))
-    latestFilingDate = latestFilingDateTime.strftime("%Y-%m-%d")
-    filingYear = latestFilingDateTime.strftime("%Y")
-    logging.info("Latest Filing Date : " + latestFilingDate)
-    secFilingList = []
-    
-    if r.get_count() == 0:
-        # Check if we have already processed the latest filing, if yes then skip
-        createSecFilingIndex(SearchService, SearchKey, secFilingIndexName)
-        r = findSecFiling(SearchService, SearchKey, secFilingIndexName, cik, filingType, latestFilingDate, returnFields=['id', 'cik', 'company', 'filingType', 'filingDate',
-                                                                                                                        'periodOfReport', 'sic', 'stateOfInc', 'fiscalYearEnd',
-                                                                                                                        'filingHtmlIndex', 'htmFilingLink', 'completeTextFilingLink',
-                                                                                                                        'item1', 'item1A', 'item1B', 'item2', 'item3', 'item4', 'item5',
-                                                                                                                        'item6', 'item7', 'item7A', 'item8', 'item9', 'item9A', 'item9B',
-                                                                                                                        'item10', 'item11', 'item12', 'item13', 'item14', 'item15',
-                                                                                                                        'sourcefile'])
-        logging.info("Found existing filing index :" + str(r.get_count()))
+    if len(secFilingsListResp) > 0:
+        latestFilingDateTime = datetime.strptime(secFilingsListResp[0]['fillingDate'], '%Y-%m-%d %H:%M:%S')
+        logging.info("Latest Filing Date : " + str(latestFilingDateTime))
+        latestFilingDate = latestFilingDateTime.strftime("%Y-%m-%d")
+        filingYear = latestFilingDateTime.strftime("%Y")
+        filingMonth = int(latestFilingDateTime.strftime("%m"))
+        if filingMonth > 0 & filingMonth <= 3:
+            filingQuarter = 1
+        elif filingMonth > 3 & filingMonth <= 6:
+            filingQuarter = 2
+        elif filingMonth > 6 & filingMonth <= 9:
+            filingQuarter = 3
+        else:
+            filingQuarter = 4
+        dt = pd.to_datetime(datetime.now(), format='%Y/%m/%d')
+        dt1 = pd.to_datetime(latestFilingDate, format='%Y/%m/%d')
+        totalDays = (dt-dt1).days
+        if totalDays < 31:
+            skipIndicies = False
+        else:
+            skipIndicies = True
+
+        logging.info("Latest Filing Date : " + latestFilingDate)
+        secFilingList = []
+        
         if r.get_count() == 0:
-            emptyBody = {
+            # Check if we have already processed the latest filing, if yes then skip
+            createSecFilingIndex(SearchService, SearchKey, secFilingIndexName)
+            r = findSecFiling(SearchService, SearchKey, secFilingIndexName, cik, filingType, latestFilingDate, returnFields=['id', 'cik', 'company', 'filingType', 'filingDate',
+                                                                                                                            'periodOfReport', 'sic', 'stateOfInc', 'fiscalYearEnd',
+                                                                                                                            'filingHtmlIndex', 'htmFilingLink', 'completeTextFilingLink',
+                                                                                                                            'item1', 'item1A', 'item1B', 'item2', 'item3', 'item4', 'item5',
+                                                                                                                            'item6', 'item7', 'item7A', 'item8', 'item9', 'item9A', 'item9B',
+                                                                                                                            'item10', 'item11', 'item12', 'item13', 'item14', 'item15',
+                                                                                                                            'sourcefile'])
+            logging.info("Found existing filing index :" + str(r.get_count()))
+            if r.get_count() == 0:
+                emptyBody = {
+                        "values": [
+                            {
+                                "recordId": 0,
+                                "data": {
+                                    "text": ""
+                                }
+                            }
+                        ]
+                }
+
+                secExtractBody = {
                     "values": [
                         {
                             "recordId": 0,
                             "data": {
-                                "text": ""
-                            }
-                        }
-                    ]
-            }
-
-            secExtractBody = {
-                "values": [
-                    {
-                        "recordId": 0,
-                        "data": {
-                            "text": {
-                                "edgar_crawler": {
-                                    "start_year": int(filingYear),
-                                    "end_year": int(filingYear),
-                                    "quarters": [1,2,3,4],
-                                    "filing_types": [
-                                        "10-K"
-                                    ],
-                                    "cik_tickers": [cik],
-                                    "user_agent": "Your name (your email)",
-                                    "raw_filings_folder": "RAW_FILINGS",
-                                    "indices_folder": "INDICES",
-                                    "filings_metadata_file": "FILINGS_METADATA.csv",
-                                    "skip_present_indices": True
-                                },
-                                "extract_items": {
-                                    "raw_filings_folder": "RAW_FILINGS",
-                                    "extracted_filings_folder": "EXTRACTED_FILINGS",
-                                    "filings_metadata_file": "FILINGS_METADATA.csv",
-                                    "items_to_extract": ["1","1A","1B","2","3","4","5","6","7","7A","8","9","9A","9B","10","11","12","13","14","15"],
-                                    "remove_tables": True,
-                                    "skip_extracted_filings": True
+                                "text": {
+                                    "edgar_crawler": {
+                                        "start_year": int(filingYear),
+                                        "end_year": int(filingYear),
+                                        "quarters": [int(filingQuarter)],
+                                        "filing_types": [
+                                            "10-K"
+                                        ],
+                                        "cik_tickers": [cik],
+                                        "user_agent": "Your name (your email)",
+                                        "raw_filings_folder": "RAW_FILINGS",
+                                        "indices_folder": "INDICES",
+                                        "filings_metadata_file": "FILINGS_METADATA.csv",
+                                        "skip_present_indices": skipIndicies
+                                    },
+                                    "extract_items": {
+                                        "raw_filings_folder": "RAW_FILINGS",
+                                        "extracted_filings_folder": "EXTRACTED_FILINGS",
+                                        "filings_metadata_file": "FILINGS_METADATA.csv",
+                                        "items_to_extract": ["1","1A","1B","2","3","4","5","6","7","7A","8","9","9A","9B","10","11","12","13","14","15"],
+                                        "remove_tables": False,
+                                        "skip_extracted_filings": True
+                                    }
                                 }
                             }
                         }
-                    }
-                ]
-            }
-            # Call Azure Function to perform Web-scraping and store the JSON in our blob
-            secExtract = requests.post(SecExtractionUrl, json = secExtractBody)
-            # Need to validated on how best to manage the processing
-            time.sleep(10)
-            # Once the JSON is created, call the function to process the JSON and store the data in our index
-            docPersistUrl = SecDocPersistUrl + "&indexType=cogsearchvs&indexName=" + secFilingIndexName + "&embeddingModelType=" + embeddingModelType
-            secPersist = requests.post(docPersistUrl, json = emptyBody)
-            r = findSecFiling(SearchService, SearchKey, secFilingIndexName, cik, filingType, latestFilingDate, returnFields=['id', 'cik', 'company', 'filingType', 'filingDate',
-                                                                                                                        'periodOfReport', 'sic', 'stateOfInc', 'fiscalYearEnd',
-                                                                                                                        'filingHtmlIndex', 'htmFilingLink', 'completeTextFilingLink',
-                                                                                                                        'item1', 'item1A', 'item1B', 'item2', 'item3', 'item4', 'item5',
-                                                                                                                        'item6', 'item7', 'item7A', 'item8', 'item9', 'item9A', 'item9B',
-                                                                                                                        'item10', 'item11', 'item12', 'item13', 'item14', 'item15',
-                                                                                                                        'sourcefile'])
-            
-        # Retrieve the latest filing from our index
-        for filing in r:
-            secFilingList.append({
-                "id": filing['id'],
-                "cik": filing['cik'],
-                "company": filing['company'],
-                "filingType": filing['filingType'],
-                "filingDate": filing['filingDate'],
-                "periodOfReport": filing['periodOfReport'],
-                "sic": filing['sic'],
-                "stateOfInc": filing['stateOfInc'],
-                "fiscalYearEnd": filing['fiscalYearEnd'],
-                "filingHtmlIndex": filing['filingHtmlIndex'],
-                "completeTextFilingLink": filing['completeTextFilingLink'],
-                "item1": filing['item1'],
-                "item1A": filing['item1A'],
-                "item1B": filing['item1B'],
-                "item2": filing['item2'],
-                "item3": filing['item3'],
-                "item4": filing['item4'],
-                "item5": filing['item5'],
-                "item6": filing['item6'],
-                "item7": filing['item7'],
-                "item7A": filing['item7A'],
-                "item8": filing['item8'],
-                "item9": filing['item9'],
-                "item9A": filing['item9A'],
-                "item9B": filing['item9B'],
-                "item10": filing['item10'],
-                "item11": filing['item11'],
-                "item12": filing['item12'],
-                "item13": filing['item13'],
-                "item14": filing['item14'],
-                "item15": filing['item15'],
-                "sourcefile": filing['sourcefile']
-            })
-            logging.info('Process summaries for ' + symbol)
-            secFilingsPib = processStep4Summaries(llm, secFilingList)
-            s4Data.append({
-                        'id' : str(uuid.uuid4()),
-                        'symbol': symbol,
-                        'cik': cik,
-                        'step': step,
-                        'description': 'SEC Filings',
-                        'insertedDate': today.strftime("%Y-%m-%d"),
-                        'pibData' : str(secFilingsPib)
+                    ]
+                }
+                # Call Azure Function to perform Web-scraping and store the JSON in our blob
+                secExtract = requests.post(SecExtractionUrl, json = secExtractBody)
+                # Need to validated on how best to manage the processing
+                time.sleep(10)
+                # Once the JSON is created, call the function to process the JSON and store the data in our index
+                docPersistUrl = SecDocPersistUrl + "&indexType=cogsearchvs&indexName=" + secFilingIndexName + "&embeddingModelType=" + embeddingModelType
+                secPersist = requests.post(docPersistUrl, json = emptyBody)
+                r = findSecFiling(SearchService, SearchKey, secFilingIndexName, cik, filingType, latestFilingDate, returnFields=['id', 'cik', 'company', 'filingType', 'filingDate',
+                                                                                                                            'periodOfReport', 'sic', 'stateOfInc', 'fiscalYearEnd',
+                                                                                                                            'filingHtmlIndex', 'htmFilingLink', 'completeTextFilingLink',
+                                                                                                                            'item1', 'item1A', 'item1B', 'item2', 'item3', 'item4', 'item5',
+                                                                                                                            'item6', 'item7', 'item7A', 'item8', 'item9', 'item9A', 'item9B',
+                                                                                                                            'item10', 'item11', 'item12', 'item13', 'item14', 'item15',
+                                                                                                                            'sourcefile'])
+                
+            # Retrieve the latest filing from our index
+            lastSecData = ''
+            for filing in r:
+                lastSecData = filing['item1'] + '\n' + filing['item1A'] + '\n' + filing['item1B'] + '\n' + filing['item2'] + '\n' + filing['item3'] + '\n' + filing['item4'] + '\n' + \
+                    filing['item5'] + '\n' + filing['item6'] + '\n' + filing['item7'] + '\n' + filing['item7A'] + '\n' + filing['item8'] + '\n' + \
+                    filing['item9'] + '\n' + filing['item9A'] + '\n' + filing['item9B'] + '\n' + filing['item10'] + '\n' + filing['item11'] + '\n' + filing['item12'] + '\n' + \
+                    filing['item13'] + '\n' + filing['item14'] + '\n' + filing['item15']
+                secFilingList.append({
+                    "id": filing['id'],
+                    "cik": filing['cik'],
+                    "company": filing['company'],
+                    "filingType": filing['filingType'],
+                    "filingDate": filing['filingDate'],
+                    "periodOfReport": filing['periodOfReport'],
+                    "sic": filing['sic'],
+                    "stateOfInc": filing['stateOfInc'],
+                    "fiscalYearEnd": filing['fiscalYearEnd'],
+                    "filingHtmlIndex": filing['filingHtmlIndex'],
+                    "completeTextFilingLink": filing['completeTextFilingLink'],
+                    "item1": filing['item1'],
+                    "item1A": filing['item1A'],
+                    "item1B": filing['item1B'],
+                    "item2": filing['item2'],
+                    "item3": filing['item3'],
+                    "item4": filing['item4'],
+                    "item5": filing['item5'],
+                    "item6": filing['item6'],
+                    "item7": filing['item7'],
+                    "item7A": filing['item7A'],
+                    "item8": filing['item8'],
+                    "item9": filing['item9'],
+                    "item9A": filing['item9A'],
+                    "item9B": filing['item9B'],
+                    "item10": filing['item10'],
+                    "item11": filing['item11'],
+                    "item12": filing['item12'],
+                    "item13": filing['item13'],
+                    "item14": filing['item14'],
+                    "item15": filing['item15'],
+                    "sourcefile": filing['sourcefile']
                 })
-            mergeDocs(SearchService, SearchKey, pibIndexName, s4Data)
+                logging.info('Process summaries for ' + symbol)
+                secFilingsPib = processStep4Summaries(llm, secFilingList)
+                s4Data.append({
+                            'id' : str(uuid.uuid4()),
+                            'symbol': symbol,
+                            'cik': cik,
+                            'step': step,
+                            'description': 'SEC Filings',
+                            'insertedDate': today.strftime("%Y-%m-%d"),
+                            'pibData' : str(secFilingsPib)
+                    })
+                mergeDocs(SearchService, SearchKey, pibIndexName, s4Data)
+
+                # Check if we have already processed the latest filing, if yes then skip
+                secFilingsVectorIndexName = 'latestsecfilings'
+                createSecFilingsVectorIndex(SearchService, SearchKey, secFilingsVectorIndexName)
+                r = findLatestSecFilings(SearchService, SearchKey, secFilingsVectorIndexName, cik, symbol, latestFilingDate, filingType, returnFields=['id', 'cik', 'symbol', 'latestFilingDate', 'filingType',
+                                                                                                                                'content'])
+                if r.get_count() == 0:
+                    logging.info("Processing latest SEC Filings for CIK : " + str(cik) + " and Symbol : " + str(symbol))
+                    splitter = RecursiveCharacterTextSplitter(chunk_size=8000, chunk_overlap=1000)
+                    rawDocs = splitter.create_documents([lastSecData])
+                    docs = splitter.split_documents(rawDocs)
+                    logging.info("Number of documents chunks generated from Last SEC Filings : " + str(len(docs)))
+
+                    # Store the last index of the earning call transcript in vector Index
+                    indexSecFilingsSections(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey,
+                                        embeddingModelType, OpenAiEmbedding, secFilingsVectorIndexName, docs, cik,
+                                        symbol, latestFilingDate, filingType)
+        else:
+            logging.info('Found existing data')
+            for s in r:
+                s4Data.append(
+                    {
+                        'id' : s['id'],
+                        'symbol': s['symbol'],
+                        'cik': s['cik'],
+                        'step': s['step'],
+                        'description': s['description'],
+                        'insertedDate': s['insertedDate'],
+                        'pibData' : s['pibData']
+                    })
     else:
-        logging.info('Found existing data')
-        for s in r:
-            s4Data.append(
-                {
-                    'id' : s['id'],
-                    'symbol': s['symbol'],
-                    'cik': s['cik'],
-                    'step': s['step'],
-                    'description': s['description'],
-                    'insertedDate': s['insertedDate'],
-                    'pibData' : s['pibData']
-                })
+        logging.info('No Sec Filing data')
+
+        s4Data.append({
+                    'id' : str(uuid.uuid4()),
+                    'symbol': symbol,
+                    'cik': cik,
+                    'step': step,
+                    'description': 'SEC Filings',
+                    'insertedDate': today.strftime("%Y-%m-%d"),
+                    'pibData' : str([{
+                        "section": "SEC Filings",
+                        "summaryType": "SEC Filings",
+                        "summary": "No Sec Filing Found"
+                    }])
+            })
+        mergeDocs(SearchService, SearchKey, pibIndexName, s4Data)
+
     return s4Data
 
 def processStep5(pibIndexName, cik, step, symbol, today):
@@ -873,82 +972,107 @@ def processStep5(pibIndexName, cik, step, symbol, today):
         #ratingsDf = pd.DataFrame.from_dict(pd.json_normalize(companyRating))
         researchReport = []
 
-        researchReport.append({
-            "key": "Overall Recommendation",
-            "value": companyRating[0]['ratingRecommendation']
-        })
-        researchReport.append({
-            "key": "DCF Recommendation",
-            "value": companyRating[0]['ratingDetailsDCFRecommendation']
-        })
-        researchReport.append({
-            "key": "ROE Recommendation",
-            "value": companyRating[0]['ratingDetailsROERecommendation']
-        })
-        researchReport.append({
-            "key": "ROA Recommendation",
-            "value": companyRating[0]['ratingDetailsROARecommendation']
-        })
-        researchReport.append({
-            "key": "PB Recommendation",
-            "value": companyRating[0]['ratingDetailsPBRecommendation']
-        })
-        researchReport.append({
-            "key": "PE Recommendation",
-            "value": companyRating[0]['ratingDetailsPERecommendation']
-        })
-        researchReport.append({
-            "key": "Altman ZScore",
-            "value": fScore[0]['altmanZScore']
-        })
-        researchReport.append({
-            "key": "Piotroski Score",
-            "value": fScore[0]['piotroskiScore']
-        })
-        researchReport.append({
-            "key": "Environmental Score",
-            "value": esgScores[0]['environmentalScore']
-        })
-        researchReport.append({
-            "key": "Social Score",
-            "value": esgScores[0]['socialScore']
-        })
-        researchReport.append({
-            "key": "Governance Score",
-            "value": esgScores[0]['governanceScore']
-        })
-        researchReport.append({
-            "key": "ESG Score",
-            "value": esgScores[0]['ESGScore']
-        })
-        researchReport.append({
-            "key": "ESG RIsk Rating",
-            "value": esgRating[0]['ESGRiskRating']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus Buy",
-            "value": ugConsensus[0]['buy']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus Sell",
-            "value": ugConsensus[0]['sell']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus Strong Buy",
-            "value": ugConsensus[0]['strongBuy']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus Strong Sell",
-            "value": ugConsensus[0]['strongSell']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus Hold",
-            "value": ugConsensus[0]['hold']
-        })
-        researchReport.append({
-            "key": "Analyst Consensus",
-            "value": ugConsensus[0]['consensus']
-        })
+        try:
+            researchReport.append({
+                "key": "Overall Recommendation",
+                "value": companyRating[0]['ratingRecommendation']
+            })
+            researchReport.append({
+                "key": "DCF Recommendation",
+                "value": companyRating[0]['ratingDetailsDCFRecommendation']
+            })
+            researchReport.append({
+                "key": "ROE Recommendation",
+                "value": companyRating[0]['ratingDetailsROERecommendation']
+            })
+            researchReport.append({
+                "key": "ROA Recommendation",
+                "value": companyRating[0]['ratingDetailsROARecommendation']
+            })
+            researchReport.append({
+                "key": "PB Recommendation",
+                "value": companyRating[0]['ratingDetailsPBRecommendation']
+            })
+            researchReport.append({
+                "key": "PE Recommendation",
+                "value": companyRating[0]['ratingDetailsPERecommendation']
+            })
+        except:
+            logging.info('No data found for companyRating')
+            pass
+
+        try:
+            researchReport.append({
+                "key": "Altman ZScore",
+                "value": fScore[0]['altmanZScore']
+            })
+            researchReport.append({
+                "key": "Piotroski Score",
+                "value": fScore[0]['piotroskiScore']
+            })
+        except:
+            logging.info('No data found for fScore')
+            pass
+
+        try:
+            researchReport.append({
+                "key": "Environmental Score",
+                "value": esgScores[0]['environmentalScore']
+            })
+            researchReport.append({
+                "key": "Social Score",
+                "value": esgScores[0]['socialScore']
+            })
+            researchReport.append({
+                "key": "Governance Score",
+                "value": esgScores[0]['governanceScore']
+            })
+            researchReport.append({
+                "key": "ESG Score",
+                "value": esgScores[0]['ESGScore']
+            })
+        except:
+            logging.info('No data found for esgScores')
+            pass
+
+        try:
+            researchReport.append({
+                "key": "ESG RIsk Rating",
+                "value": esgRating[0]['ESGRiskRating']
+            })
+        except:
+            logging.info('No data found for esgRating')
+            pass
+
+        try:
+            researchReport.append({
+                "key": "Analyst Consensus Buy",
+                "value": ugConsensus[0]['buy']
+            })
+            researchReport.append({
+                "key": "Analyst Consensus Sell",
+                "value": ugConsensus[0]['sell']
+            })
+            researchReport.append({
+                "key": "Analyst Consensus Strong Buy",
+                "value": ugConsensus[0]['strongBuy']
+            })
+            researchReport.append({
+                "key": "Analyst Consensus Strong Sell",
+                "value": ugConsensus[0]['strongSell']
+            })
+            researchReport.append({
+                "key": "Analyst Consensus Hold",
+                "value": ugConsensus[0]['hold']
+            })
+            researchReport.append({
+                "key": "Analyst Consensus",
+                "value": ugConsensus[0]['consensus']
+            })
+        except:
+            logging.info('No data found for ugConsensus')
+            pass
+
         # researchReport.append({
         #     "key": "Price Target Consensus",
         #     "value": priceConsensus[0]['targetConsensus']
@@ -982,7 +1106,7 @@ def processStep5(pibIndexName, cik, step, symbol, today):
                 })
     return s5Data
 
-def PibSteps(step, symbol, embeddingModelType, value):
+def PibSteps(step, symbol, embeddingModelType, overrides):
     logging.info("Calling PibSteps Open AI for symbol " + symbol)
 
     central = timezone('US/Central')
@@ -998,7 +1122,6 @@ def PibSteps(step, symbol, embeddingModelType, value):
     os.environ['BING_SEARCH_URL'] = BingUrl
     pibIndexName = 'pibdata'
     filingType = "10-K"
-
     # Find out the CIK for the Symbol 
     cik = str(int(searchCik(apikey=FmpKey, ticker=symbol)[0]["companyCik"]))
     logging.info(f"CIK for {symbol} is {cik}")
@@ -1010,7 +1133,7 @@ def PibSteps(step, symbol, embeddingModelType, value):
             openai.api_type = "azure"
             openai.api_key = OpenAiKey
             openai.api_version = OpenAiVersion
-            openai.api_base = f"https://{OpenAiService}.openai.azure.com"
+            openai.api_base = f"{OpenAiEndPoint}"
 
             llm = AzureChatOpenAI(
                     openai_api_base=openai.api_base,
@@ -1021,7 +1144,6 @@ def PibSteps(step, symbol, embeddingModelType, value):
                     openai_api_type="azure",
                     max_tokens=tokenLength)
                 
-            embeddings = OpenAIEmbeddings(deployment=OpenAiEmbedding, chunk_size=1, openai_api_key=OpenAiKey)
             logging.info("LLM Setup done")
         elif embeddingModelType == "openai":
             openai.api_type = "open_ai"
@@ -1032,7 +1154,6 @@ def PibSteps(step, symbol, embeddingModelType, value):
                 openai_api_key=OpenAiApiKey,
                 model_name="gpt-3.5-turbo",
                 max_tokens=tokenLength)
-            embeddings = OpenAIEmbeddings(openai_api_key=OpenAiApiKey)
         
         if step == "1":
             s1Data = processStep1(pibIndexName, cik, step, symbol, temperature, llm, today)
@@ -1154,7 +1275,6 @@ def TransformValue(step, symbol, embeddingModelType, record):
     try:
         # Getting the items from the values/data/text
         value = data['text']
-
         answer = PibSteps(step, symbol, embeddingModelType, value)
         return ({
             "recordId": recordId,

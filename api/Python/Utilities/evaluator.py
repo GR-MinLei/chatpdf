@@ -16,7 +16,7 @@ from azure.search.documents.indexes.models import (
     SearchField,  
     SemanticSettings,  
     VectorSearch,  
-    VectorSearchAlgorithmConfiguration,  
+    HnswVectorSearchAlgorithmConfiguration,  
 )
 from azure.search.documents.models import Vector  
 from tenacity import retry, wait_random_exponential, stop_after_attempt  
@@ -24,13 +24,12 @@ import openai
 
 @retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6))
 # Function to generate embeddings for title and content fields, also used for query embeddings
-def generateEmbeddings(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, text):
+def generateEmbeddings(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, text):
     if (embeddingModelType == 'azureopenai'):
-        baseUrl = f"https://{OpenAiService}.openai.azure.com"
         openai.api_type = "azure"
         openai.api_key = OpenAiKey
         openai.api_version = OpenAiVersion
-        openai.api_base = f"https://{OpenAiService}.openai.azure.com"
+        openai.api_base = f"{OpenAiEndPoint}"
 
         response = openai.Embedding.create(
             input=text, engine=OpenAiEmbedding)
@@ -97,7 +96,8 @@ def createEvaluatorDocumentSearchIndex(SearchService, SearchKey, indexName):
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='documentName')]))])
+                       title_field=SemanticField(field_name="documentName"), prioritized_content_fields=[SemanticField(field_name='documentName')]))],
+                        prioritized_keywords_fields=[SemanticField(field_name='sourcefile')])
         )
 
         try:
@@ -125,7 +125,7 @@ def createEvaluatorQaSearchIndex(SearchService, SearchKey, indexName):
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='question')]))])
+                        title_field=SemanticField(field_name="question"), prioritized_content_fields=[SemanticField(field_name='question')]))])
         )
 
         try:
@@ -163,7 +163,7 @@ def createEvaluatorResultIndex(SearchService, SearchKey, indexName):
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='question')]))])
+                        title_field=SemanticField(field_name="question"), prioritized_content_fields=[SemanticField(field_name='question')]))])
         )
 
         try:
@@ -195,7 +195,7 @@ def createEvaluatorRunIndex(SearchService, SearchKey, indexName):
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='documentId')]))])
+                        title_field=SemanticField(field_name="documentId"), prioritized_content_fields=[SemanticField(field_name='documentId')]))])
         )
 
         try:
@@ -316,15 +316,15 @@ def createEvaluatorDataSearchIndex(SearchService, SearchKey, indexName):
                         SearchableField(name="content", type=SearchFieldDataType.String,
                                         searchable=True, retrievable=True, analyzer_name="en.microsoft"),
                         SearchField(name="contentVector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                                    searchable=True, dimensions=1536, vector_search_configuration="vectorConfig"),
+                                    searchable=True, vector_search_dimensions=1536, vector_search_configuration="vectorConfig"),
                         SimpleField(name="sourceFile", type=SearchFieldDataType.String, filterable=True, facetable=True),
             ],
             vector_search = VectorSearch(
                 algorithm_configurations=[
-                    VectorSearchAlgorithmConfiguration(
+                    HnswVectorSearchAlgorithmConfiguration(
                         name="vectorConfig",
                         kind="hnsw",
-                        hnsw_parameters={
+                        parameters={
                             "m": 4,
                             "efConstruction": 400,
                             "efSearch": 500,
@@ -337,7 +337,8 @@ def createEvaluatorDataSearchIndex(SearchService, SearchKey, indexName):
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='content')]))])
+                        title_field=SemanticField(field_name="content"), prioritized_content_fields=[SemanticField(field_name='content')]))],
+                        prioritized_keywords_fields=[SemanticField(field_name='sourcefile')])
         )
 
         try:
@@ -348,7 +349,7 @@ def createEvaluatorDataSearchIndex(SearchService, SearchKey, indexName):
     else:
         print(f"Search index {indexName} already exists")
 
-def createEvaluatorDataSections(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, fileName, 
+def createEvaluatorDataSections(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, fileName, 
                             docs, splitMethod, chunkSize, overlap, model, modelType, documentId):
     counter = 1
 
@@ -362,16 +363,16 @@ def createEvaluatorDataSections(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiA
             "model": model,
             "modelType": modelType,
             "content": i.page_content,
-            "contentVector": generateEmbeddings(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, i.page_content),
+            "contentVector": generateEmbeddings(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding, i.page_content),
             "sourceFile": os.path.basename(fileName)
         }
         counter += 1
 
-def indexEvaluatorDataSections(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey, 
+def indexEvaluatorDataSections(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, SearchService, SearchKey, 
                            embeddingModelType, OpenAiEmbedding, fileName, indexName, docs,
                            splitMethod, chunkSize, overlap, model, modelType, documentId):
     print("Total docs: " + str(len(docs)))
-    sections = createEvaluatorDataSections(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding,
+    sections = createEvaluatorDataSections(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, embeddingModelType, OpenAiEmbedding,
                                        fileName, docs, splitMethod, chunkSize, overlap, model, modelType, documentId)
     print(f"Indexing sections from '{fileName}' into search index '{indexName}'")
     searchClient = SearchClient(endpoint=f"https://{SearchService}.search.windows.net/",

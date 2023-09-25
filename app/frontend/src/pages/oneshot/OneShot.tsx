@@ -7,7 +7,7 @@ import styles from "./OneShot.module.css";
 import { Dropdown, DropdownMenuItemType, IDropdownStyles, IDropdownOption } from '@fluentui/react/lib/Dropdown';
 
 import { askApi, askAgentApi, askTaskAgentApi, Approaches, AskResponse, AskRequest, refreshIndex, getSpeechApi, 
-    summaryAndQa, refreshQuestions, getUserInfo } from "../../api";
+    refreshQuestions, getUserInfo, SearchTypes } from "../../api";
 import { Answer, AnswerError } from "../../components/Answer";
 import { QuestionInput } from "../../components/QuestionInput";
 import { AnalysisPanel, AnalysisPanelTabs } from "../../components/AnalysisPanel";
@@ -30,6 +30,7 @@ const OneShot = () => {
     const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
     const [isQuestionPanelOpen, setIsQuestionPanelOpen] = useState(false);
     const [approach, setApproach] = useState<Approaches>(Approaches.RetrieveThenRead);
+    const [searchTypeOptions, setSearchTypeOptions] = useState<SearchTypes>(SearchTypes.Similarity);
     const [promptTemplate, setPromptTemplate] = useState<string>("");
     const [promptTemplatePrefix, setPromptTemplatePrefix] = useState<string>("");
     const [promptTemplateSuffix, setPromptTemplateSuffix] = useState<string>("");
@@ -40,7 +41,6 @@ const OneShot = () => {
     const [useSemanticCaptions, setUseSemanticCaptions] = useState<boolean>(false);
     const [useSuggestFollowupQuestions, setUseSuggestFollowupQuestions] = useState<boolean>(true);
     const [useAutoSpeakAnswers, setUseAutoSpeakAnswers] = useState<boolean>(false);
-
 
     const [options, setOptions] = useState<any>([])
     const [selectedItem, setSelectedItem] = useState<IDropdownOption>();
@@ -149,6 +149,18 @@ const OneShot = () => {
         {
           key: 'financial',
           text: 'financial'
+        },
+        {
+            key: 'financialtable',
+            text: 'financialtable'
+        },
+        {
+            key: 'prospectus',
+            text: 'prospectus'
+        },
+        {
+            key: 'productdocmd',
+            text: 'productdocmd'
         },
         {
           key: 'insurance',
@@ -325,6 +337,7 @@ const OneShot = () => {
                     autoSpeakAnswers: useAutoSpeakAnswers,
                     embeddingModelType: String(selectedEmbeddingItem?.key),
                     deploymentType: String(selectedDeploymentType?.key),
+                    searchType: searchTypeOptions,
                 }
             };
             const result = await askApi(request, String(selectedItem?.key), String(selectedIndex), 'stuff');
@@ -369,9 +382,11 @@ const OneShot = () => {
                     autoSpeakAnswers: useAutoSpeakAnswers,
                     embeddingModelType: String(selectedEmbeddingItem?.key),
                     deploymentType: String(selectedDeploymentType?.key),
+                    searchType: searchTypeOptions,
                 }
             };
             const result = await askAgentApi(request);
+            console.log(result);
             //setAgentAnswer(result);
             setAgentAnswer([result, null]);
             if(useAutoSpeakAnswers) {
@@ -413,6 +428,7 @@ const OneShot = () => {
                     autoSpeakAnswers: useAutoSpeakAnswers,
                     embeddingModelType: String(selectedEmbeddingItem?.key),
                     deploymentType: String(selectedDeploymentType?.key),
+                    searchType: searchTypeOptions,
                 }
             };
             const result = await askTaskAgentApi(request);
@@ -509,6 +525,10 @@ const OneShot = () => {
         setApproach((option?.key as Approaches) || Approaches.RetrieveThenRead);
     };
 
+    const onSearchTypeChange = (_ev?: React.FormEvent<HTMLElement | HTMLInputElement>, option?: IChoiceGroupOption) => {
+        setSearchTypeOptions((option?.key as SearchTypes) || SearchTypes.Similarity);
+    };
+
     const onExampleClicked = (example: string) => {
         makeApiRequest(example);
     };
@@ -584,6 +604,8 @@ const OneShot = () => {
 
                 if (Number(item.chunkSize) > 4000) {
                     setSelectedDeploymentType(deploymentTypeOptions[1])
+                } else {
+                    setSelectedDeploymentType(deploymentTypeOptions[0])
                 }
 
                 const sampleQuestion = []
@@ -591,8 +613,8 @@ const OneShot = () => {
                 for (const item of questionList) {
                     if ((item != '')) {
                         sampleQuestion.push({
-                            text: item.replace(/[0-9]./g, ''),
-                            value: item.replace(/[0-9]./g, ''),
+                            text: item.replace(/^\d+\.\s*/, '').replace('<', '').replace('>', ''),
+                            value: item.replace(/^\d+\.\s*/, '').replace('<', '').replace('>', ''),
                         })
                     } 
                 }
@@ -647,11 +669,73 @@ const OneShot = () => {
         {summaries}
         Question: {question}
         `
+
+        const financialPrompt = `You are an AI assistant tasked with answering questions and summarizing information from 
+        earning call transcripts, annual reports, SEC filings and financial statements.
+        Your answer should accurately capture the key information in the document while avoiding the omission of any domain-specific words. 
+        Please generate a concise and comprehensive information that includes details such as reporting year and amount in millions.
+        Ensure that it is easy to understand for business professionals and provides an accurate representation of the financial statement history. 
+        
+        Please remember to use clear language and maintain the integrity of the original information without missing any important details
+
+        QUESTION: {question}
+        =========
+        {summaries}
+        =========
+        `
+
+        const financialTablePrompt = `You are an AI assistant tasked with answering questions and summarizing information from 
+        financial statements like income statement, cashflow and balance sheets. 
+        Additionally you may also be asked to answer questions about financial ratios and other financial metrics.
+        The data that you are presented will be in table format or structure.
+        Your answer should accurately capture the key information in the document while avoiding the omission of any domain-specific words. 
+        Please generate a concise and comprehensive information that includes details such as reporting year and amount in millions.
+        Ensure that it is easy to understand for business professionals and provides an accurate representation of the financial statement history. 
+        
+        Please remember to use clear language and maintain the integrity of the original information without missing any important details
+
+        QUESTION: {question}
+        =========
+        {summaries}
+        =========
+        `
+
+        const prospectusPrompt = `"""You are an AI assistant tasked with summarizing documents from large documents that contains information about Initial Public Offerings. 
+        IPO document contains sections with information about the company, its business, strategies, risk, management structure, financial, and other information.
+        Your summary should accurately capture the key information in the document while avoiding the omission of any domain-specific words. 
+        Please remember to use clear language and maintain the integrity of the original information without missing any important details:
+        QUESTION: {question}
+        =========
+        {summaries}
+        =========
+
+        """`
+
+        const productDocMdPrompt = `"""You are an AI assistant tasked with answering questions and summarizing information for 
+        product or service from documentations and knowledge base.
+        Your answer should accurately capture the key information in the document while avoiding the omission of any domain-specific words. 
+        Please generate a concise and comprehensive information that includes details about the product or service.
+        Please remember to use clear language and maintain the integrity of the original information without missing any important details
+        QUESTION: {question}
+        =========
+        {summaries}
+        =========
+
+        """`
+
         if (promptType == "generic") {
             setPromptTemplate(genericPrompt)
         }
         else if (promptType == "medical") {
             setPromptTemplate(medicalPrompt)
+        } else if (promptType == "financial") {
+            setPromptTemplate(financialPrompt)
+        } else if (promptType == "financialtable") {
+            setPromptTemplate(financialTablePrompt)
+        } else if (promptType == "prospectus") {
+            setPromptTemplate(prospectusPrompt)
+        } else if (promptType == "productdocmd") {
+            setPromptTemplate(productDocMdPrompt)
         } else if (promptType == "custom") {
             setPromptTemplate("")
         }
@@ -674,6 +758,8 @@ const OneShot = () => {
 
                 if (Number(item.chunkSize) > 4000) {
                     setSelectedDeploymentType(deploymentTypeOptions[1])
+                } else {
+                    setSelectedDeploymentType(deploymentTypeOptions[0])
                 }
                 const sampleQuestion = []
 
@@ -681,8 +767,8 @@ const OneShot = () => {
                 for (const item of questionList) {
                     if ((item != '')) {
                         sampleQuestion.push({
-                            text: item.replace(/[0-9]./g, ''),
-                            value: item.replace(/[0-9]./g, ''),
+                            text: item.replace(/^\d+\.\s*/, '').replace('<', '').replace('>', ''),  //item.replace(/[0-9]./g, ''),
+                            value: item.replace(/^\d+\.\s*/, '').replace('<', '').replace('>', '') //item.replace(/[0-9]./g, ''),
                         })
                     } 
                 }
@@ -735,6 +821,21 @@ const OneShot = () => {
         {
             key: Approaches.RetrieveThenRead,
             text: "Retrieve-Then-Read"
+        }
+    ];
+
+    const searchTypes: IChoiceGroupOption[] = [
+        {
+            key: SearchTypes.Similarity,
+            text: "Similarity"
+        },
+        {
+            key: SearchTypes.Hybrid,
+            text: "Hybrid"
+        },
+        {
+            key: SearchTypes.HybridReRank,
+            text: "Hybrid with ReRank"
         }
     ];
 
@@ -922,7 +1023,6 @@ const OneShot = () => {
                                     <Dropdown
                                         selectedKey={selectedEmbeddingItem ? selectedEmbeddingItem.key : undefined}
                                         onChange={onEmbeddingChange}
-                                        //defaultSelectedKey="azureopenai"
                                         placeholder="Select an LLM Model"
                                         options={embeddingOptions}
                                         disabled={false}
@@ -934,7 +1034,6 @@ const OneShot = () => {
                                     <Dropdown
                                             selectedKey={selectedDeploymentType ? selectedDeploymentType.key : undefined}
                                             onChange={onDeploymentTypeChange}
-                                            //defaultSelectedKey="azureopenai"
                                             placeholder="Select an Deployment Type"
                                             options={deploymentTypeOptions}
                                             disabled={((selectedEmbeddingItem?.key == "openai" ? true : false) || (Number(selectedChunkSize) > 4000 ? true : false))}
@@ -946,7 +1045,6 @@ const OneShot = () => {
                                     <Dropdown
                                             selectedKey={selectedPromptTypeItem ? selectedPromptTypeItem.key : undefined}
                                             onChange={onPromptTypeChange}
-                                            //defaultSelectedKey="azureopenai"
                                             placeholder="Prompt Type"
                                             options={promptTypeOptions}
                                             disabled={false}
@@ -961,49 +1059,17 @@ const OneShot = () => {
                                         onChange={onPromptTemplateChange}
                                     />
                                 </div>
-                                {/* <ChoiceGroup
+                                <ChoiceGroup
                                     className={styles.oneshotSettingsSeparator}
-                                    label="Approach"
-                                    options={approaches}
-                                    defaultSelectedKey={approach}
-                                    onChange={onApproachChange}
+                                    label="Search Type"
+                                    options={searchTypes}
+                                    defaultSelectedKey={searchTypeOptions}
+                                    onChange={onSearchTypeChange}
                                 />
-
-                                {(approach === Approaches.RetrieveThenRead || approach === Approaches.ReadDecomposeAsk) && (
-                                    <TextField
-                                        className={styles.oneshotSettingsSeparator}
-                                        defaultValue={promptTemplate}
-                                        label="Override prompt template"
-                                        multiline
-                                        autoAdjustHeight
-                                        onChange={onPromptTemplateChange}
-                                    />
-                                )} */}
-
-                                {/* {approach === Approaches.ReadRetrieveRead && (
-                                    <>
-                                        <TextField
-                                            className={styles.oneshotSettingsSeparator}
-                                            defaultValue={promptTemplatePrefix}
-                                            label="Override prompt prefix template"
-                                            multiline
-                                            autoAdjustHeight
-                                            onChange={onPromptTemplatePrefixChange}
-                                        />
-                                        <TextField
-                                            className={styles.oneshotSettingsSeparator}
-                                            defaultValue={promptTemplateSuffix}
-                                            label="Override prompt suffix template"
-                                            multiline
-                                            autoAdjustHeight
-                                            onChange={onPromptTemplateSuffixChange}
-                                        />
-                                    </>
-                                )} */}
 
                                 <SpinButton
                                     className={styles.oneshotSettingsSeparator}
-                                    label="Document to Retreive from search:"
+                                    label="Document to Retrieve from search:"
                                     min={1}
                                     max={7}
                                     defaultValue={retrieveCount.toString()}
@@ -1115,7 +1181,7 @@ const OneShot = () => {
                                         placeholder="Ask me anything"
                                         disabled={isLoading}
                                         updateQuestion={lastAgentQuestionRef.current}
-                                        onSend={question => makeApiAgentRequest(question)}
+                                        onSend={(question: string) => makeApiAgentRequest(question)}
                                     />
                                 </div>
                                 <div className={styles.chatContainer}>
@@ -1131,10 +1197,10 @@ const OneShot = () => {
                                                     //answer={answerAgent}
                                                     answer={answerAgent[0]}
                                                     isSpeaking = {isSpeaking}
-                                                    onCitationClicked={x => onShowCitation(x)}
+                                                    onCitationClicked={(x: string) => onShowCitation(x)}
                                                     onThoughtProcessClicked={() => onToggleTab(AnalysisPanelTabs.ThoughtProcessTab)}
                                                     onSupportingContentClicked={() => onToggleTab(AnalysisPanelTabs.SupportingContentTab)}
-                                                    onFollowupQuestionClicked={q => makeApiAgentRequest(q)}
+                                                    onFollowupQuestionClicked={(q: string) => makeApiAgentRequest(q)}
                                                     showFollowupQuestions={useSuggestFollowupQuestions}
                                                     onSpeechSynthesisClicked={() => isSpeaking? stopSynthesis(): startSynthesis("AnswerAgent", answerAgent[1])}
                                                 />
@@ -1151,7 +1217,7 @@ const OneShot = () => {
                                     <AnalysisPanel
                                         className={styles.oneshotAnalysisPanel}
                                         activeCitation={activeCitation}
-                                        onActiveTabChanged={x => onToggleTab(x)}
+                                        onActiveTabChanged={(x: any) => onToggleTab(x)}
                                         citationHeight="600px"
                                         //answer={answerAgent}
                                         answer={answerAgent[0]}
@@ -1271,7 +1337,7 @@ const OneShot = () => {
                                         placeholder="Ask me anything"
                                         disabled={isLoading}
                                         updateQuestion={lastTaskAgentQuestionRef.current}
-                                        onSend={question => makeApiTaskAgentRequest(question)}
+                                        onSend={(question: string) => makeApiTaskAgentRequest(question)}
                                     />
                                 </div>
                                 <div className={styles.chatContainer}>
@@ -1286,10 +1352,10 @@ const OneShot = () => {
                                                 <Answer
                                                     answer={answerTaskAgent[0]}
                                                     isSpeaking = {isSpeaking}
-                                                    onCitationClicked={x => onShowCitation(x)}
+                                                    onCitationClicked={(x: string) => onShowCitation(x)}
                                                     onThoughtProcessClicked={() => onToggleTab(AnalysisPanelTabs.ThoughtProcessTab)}
                                                     onSupportingContentClicked={() => onToggleTab(AnalysisPanelTabs.SupportingContentTab)}
-                                                    onFollowupQuestionClicked={q => makeApiTaskAgentRequest(q)}
+                                                    onFollowupQuestionClicked={(q: string) => makeApiTaskAgentRequest(q)}
                                                     showFollowupQuestions={useSuggestFollowupQuestions}
                                                     onSpeechSynthesisClicked={() => isSpeaking? stopSynthesis(): startSynthesis("AnswerTaskAgent", answerTaskAgent[1])}
                                                 />
@@ -1306,7 +1372,7 @@ const OneShot = () => {
                                     <AnalysisPanel
                                         className={styles.oneshotAnalysisPanel}
                                         activeCitation={activeCitation}
-                                        onActiveTabChanged={x => onToggleTab(x)}
+                                        onActiveTabChanged={(x: any) => onToggleTab(x)}
                                         citationHeight="600px"
                                         answer={answerTaskAgent[0]}
                                         activeTab={activeAnalysisPanelTab}

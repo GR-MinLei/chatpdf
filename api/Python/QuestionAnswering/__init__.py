@@ -21,7 +21,14 @@ from langchain.agents import create_csv_agent
 from Utilities.azureBlob import getLocalBlob, getFullPath
 from langchain.chat_models import AzureChatOpenAI, ChatOpenAI
 import uuid
-import ast
+from Utilities.azureSearch import AzureSearch
+from azure.search.documents.indexes.models import (
+    SearchableField,
+    SearchField,
+    SearchFieldDataType,
+    SimpleField,
+)
+from langchain.chains import LLMChain
 
 def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides):
     logging.info("Calling QaAnswer Open AI")
@@ -35,15 +42,28 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
         embeddingModelType = overrides.get('embeddingModelType') or 'azureopenai'
         promptTemplate = overrides.get('promptTemplate') or ''
         deploymentType = overrides.get('deploymentType') or 'gpt35'
+        searchType = overrides.get('searchType') or 'similarity'
 
-        logging.info("Search for Top " + str(topK) + " and chainType is " + str(overrideChain))
+        logging.info("TopK: " + str(topK))
+        logging.info("ChainType: " + str(overrideChain))
+        logging.info("Temperature: " + str(temperature))
+        logging.info("TokenLength: " + str(tokenLength))
+        logging.info("EmbeddingModelType: " + str(embeddingModelType))
+        logging.info("PromptTemplate: " + str(promptTemplate))
+        logging.info("DeploymentType: " + str(deploymentType))
+        logging.info("OpenAiChat: " + str(OpenAiChat))
+        logging.info("OpenAiChat16k: " + str(OpenAiChat16k))
+        logging.info("OpenAiEmbedding: " + str(OpenAiEmbedding))
+        logging.info("SearchType: " + str(searchType))
+        
+        
         thoughtPrompt = ''
 
         if (embeddingModelType == 'azureopenai'):
             openai.api_type = "azure"
             openai.api_key = OpenAiKey
             openai.api_version = OpenAiVersion
-            openai.api_base = f"https://{OpenAiService}.openai.azure.com"
+            openai.api_base = f"{OpenAiEndPoint}"
 
             if deploymentType == 'gpt35':
                 llm = AzureChatOpenAI(
@@ -64,7 +84,7 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                         openai_api_type="azure",
                         max_tokens=tokenLength)
                 
-            embeddings = OpenAIEmbeddings(deployment=OpenAiEmbedding, chunk_size=1, openai_api_key=OpenAiKey)
+            embeddings = OpenAIEmbeddings(deployment=OpenAiEmbedding, openai_api_key=OpenAiKey, openai_api_type="azure")
             logging.info("LLM Setup done")
         elif embeddingModelType == "openai":
             openai.api_type = "open_ai"
@@ -96,20 +116,18 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                 qaChain = load_qa_with_sources_chain(llm, chain_type=overrideChain, prompt=qaPrompt)
 
                 followupTemplate = """
-                Generate three very brief follow-up questions that the user would likely ask next.
-                Use double angle brackets to reference the questions, e.g. <>.
-                Try not to repeat questions that have already been asked.
+                Generate three very brief questions that the user would likely ask next.
+                Use double angle brackets to reference the questions, e.g. <What is Azure?>.
+                Try not to repeat questions that have already been asked.  Don't include the context in the answer.
 
                 Return the questions in the following format:
                 <>
                 <>
                 <>
-
+                
                 ALWAYS return a "NEXT QUESTIONS" part in your answer.
 
-                =========
                 {context}
-                =========
 
                 """
                 followupPrompt = PromptTemplate(template=followupTemplate, input_variables=["context"])
@@ -145,15 +163,18 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                                             prompt=qaPrompt)
 
                 followupTemplate = """
-                Generate three very brief follow-up questions that the user would likely ask next.
-                Use double angle brackets to reference the questions, e.g. <>.
-                Try not to repeat questions that have already been asked.
+                Generate three very brief questions that the user would likely ask next.
+                Use double angle brackets to reference the questions, e.g. <What is Azure?>.
+                Try not to repeat questions that have already been asked.  Don't include the context in the answer.
 
+                Return the questions in the following format:
+                <>
+                <>
+                <>
+                
                 ALWAYS return a "NEXT QUESTIONS" part in your answer.
 
-                =========
                 {context}
-                =========
 
                 """
                 followupPrompt = PromptTemplate(template=followupTemplate, input_variables=["context"])
@@ -195,20 +216,18 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                 qaChain = load_qa_with_sources_chain(llm, chain_type=overrideChain, combine_prompt=combinePrompt)
                 
                 followupTemplate = """
-                Generate three very brief follow-up questions that the user would likely ask next.
-                Use double angle brackets to reference the questions, e.g. <>.
-                Try not to repeat questions that have already been asked.
+                Generate three very brief questions that the user would likely ask next.
+                Use double angle brackets to reference the questions, e.g. <What is Azure?>.
+                Try not to repeat questions that have already been asked.  Don't include the context in the answer.
 
                 Return the questions in the following format:
                 <>
                 <>
                 <>
-
+                
                 ALWAYS return a "NEXT QUESTIONS" part in your answer.
 
-                =========
                 {context}
-                =========
 
                 """
                 followupPrompt = PromptTemplate(template=followupTemplate, input_variables=["context"])
@@ -248,9 +267,9 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
 
                 
                 followupTemplate = """
-                Generate three very brief follow-up questions that the user would likely ask next.
-                Use double angle brackets to reference the questions, e.g. <>.
-                Try not to repeat questions that have already been asked.
+                Generate three very brief questions that the user would likely ask next.
+                Use double angle brackets to reference the questions, e.g. <What is Azure?>.
+                Try not to repeat questions that have already been asked.  Don't include the context in the answer.
 
                 Return the questions in the following format:
                 <>
@@ -259,9 +278,7 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                 
                 ALWAYS return a "NEXT QUESTIONS" part in your answer.
 
-                =========
                 {context}
-                =========
 
                 """
                 followupPrompt = PromptTemplate(template=followupTemplate, input_variables=["context"])
@@ -269,7 +286,7 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
 
             try:
                 # Let's verify if the questions is already answered before and check our KB first before asking LLM
-                vectorQuestion = generateKbEmbeddings(OpenAiService, OpenAiKey, OpenAiVersion, OpenAiApiKey, OpenAiEmbedding, embeddingModelType, question)
+                vectorQuestion = generateKbEmbeddings(OpenAiEndPoint, OpenAiKey, OpenAiVersion, OpenAiApiKey, OpenAiEmbedding, embeddingModelType, question)
 
                 # Let's perform the search on the KB first before asking the question to the model
                 kbSearch = performKbCogVectorSearch(vectorQuestion, 'vectorQuestion', SearchService, SearchKey, indexType, indexNs, KbIndexName, 1, ["id", "question", "indexType", "indexName", "answer"])
@@ -310,9 +327,11 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                 modifiedAnswer = answer
                 
                 # Followup questions
-                followupChain = RetrievalQA(combine_documents_chain=followupChain, retriever=docRetriever)
-                followupAnswer = followupChain({"query": question}, return_only_outputs=True)
-                nextQuestions = followupAnswer['result'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                # followupChain = RetrievalQA(combine_documents_chain=followupChain, retriever=docRetriever)
+                # followupAnswer = followupChain({"query": question}, return_only_outputs=True)
+                # nextQuestions = followupAnswer['result'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                llmChain = LLMChain(prompt=followupPrompt, llm=llm)
+                nextQuestions = llmChain.predict(context=rawDocs)
                 sources = ''                
                 if (modifiedAnswer.find("I don't know") >= 0):
                     sources = ''
@@ -336,7 +355,7 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                     
                     indexDocs(SearchService, SearchKey, KbIndexName, kbData)
                 except Exception as e:
-                    logging.info("Error in KB Indexing: " + str(e))
+                    logging.error("Error in KB Indexing: " + str(e))
                     pass
 
                 return outputFinalAnswer            
@@ -362,8 +381,10 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                         thoughtPrompt = qaPrompt.format(question=question, context_str=rawDocs)
                     
                     # Followup questions
-                    followupAnswer = followupChain({"input_documents": docs, "question": question}, return_only_outputs=True)
-                    nextQuestions = followupAnswer['output_text'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                    # followupAnswer = followupChain({"input_documents": docs, "question": question}, return_only_outputs=True)
+                    # nextQuestions = followupAnswer['output_text'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                    llmChain = LLMChain(prompt=followupPrompt, llm=llm)
+                    nextQuestions = llmChain.predict(context=rawDocs)
                     sources = ''                
                     if (modifiedAnswer.find("I don't know") >= 0):
                         sources = ''
@@ -397,14 +418,50 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                     return {"data_points": "", "answer": "Working on fixing Redis Implementation - Error : " + str(e), "thoughts": "", "sources": "", "nextQuestions": "", "error":  str(e)}
             elif indexType == "cogsearch" or indexType == "cogsearchvs":
                 try:
-                    r = performCogSearch(indexType, embeddingModelType, question, indexNs, topK)
-                    if r == None:
-                        docs = [Document(page_content="No results found")]
-                    else :
-                        docs = [
-                            Document(page_content=doc['content'], metadata={"id": doc['id'], "source": doc['sourcefile']})
-                            for doc in r
-                            ]
+                    # r = performCogSearch(indexType, embeddingModelType, question, indexNs, topK)
+                    # if r == None:
+                    #     docs = [Document(page_content="No results found")]
+                    # else :
+                    #     docs = [
+                    #         Document(page_content=doc['content'], metadata={"id": doc['id'], "source": doc['sourcefile']})
+                    #         for doc in r
+                    #         ]
+                    fields=[
+                            SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+                            SearchableField(name="content", type=SearchFieldDataType.String,
+                                            searchable=True, retrievable=True, analyzer_name="en.microsoft"),
+                            SearchField(name="contentVector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+                                        searchable=True, vector_search_dimensions=1536, vector_search_configuration="vectorConfig"),
+                            SimpleField(name="sourcefile", type="Edm.String", filterable=True),
+                    ]
+                    csVectorStore: AzureSearch = AzureSearch(
+                        azure_search_endpoint=f"https://{SearchService}.search.windows.net",
+                        azure_search_key=SearchKey,
+                        index_name=indexNs,
+                        fields=fields,
+                        embedding_function=embeddings.embed_query,
+                        semantic_configuration_name="semanticConfig",
+                    )
+
+                    # Perform a similarity search
+                    if (searchType == 'similarity'):
+                        docs = csVectorStore.similarity_search(
+                            query=question,
+                            k=topK,
+                            search_type="similarity",
+                        )
+                    elif (searchType == 'hybrid'):
+                        docs = csVectorStore.similarity_search(
+                            query=question,
+                            k=topK,
+                            search_type="similarity",
+                        )
+                    elif (searchType == 'hybridrerank'):
+                        docs = csVectorStore.semantic_hybrid_search(
+                            query=question,
+                            k=topK
+                        )
+
                     rawDocs=[]
                     for doc in docs:
                         rawDocs.append(doc.page_content)
@@ -420,8 +477,10 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
                     
 
                     # Followup questions
-                    followupAnswer = followupChain({"input_documents": docs, "question": question}, return_only_outputs=True)
-                    nextQuestions = followupAnswer['output_text'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                    # followupAnswer = followupChain({"input_documents": docs, "question": question}, return_only_outputs=True)
+                    # nextQuestions = followupAnswer['output_text'].replace("Answer: ", '').replace("Sources:", 'SOURCES:').replace("Next Questions:", 'NEXT QUESTIONS:').replace('NEXT QUESTIONS:', '').replace('NEXT QUESTIONS', '')
+                    llmChain = LLMChain(prompt=followupPrompt, llm=llm)
+                    nextQuestions = llmChain.predict(context=rawDocs)
                     sources = ''                
                     if (modifiedAnswer.find("I don't know") >= 0):
                         sources = ''
@@ -473,46 +532,10 @@ def QaAnswer(chainType, question, indexType, value, indexNs, approach, overrides
     
 
     except Exception as e:
-      logging.info("Error in QaAnswer Open AI : " + str(e))
+      logging.error("Error in QaAnswer Open AI : " + str(e))
       return {"data_points": "", "answer": "Exception during finding answers - Error : " + str(e), "thoughts": "", "sources": "", "nextQuestions": "", "error":  str(e)}
 
     #return answer
-
-def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
-    logging.info(f'{context.function_name} HTTP trigger function processed a request.')
-    if hasattr(context, 'retry_context'):
-        logging.info(f'Current retry count: {context.retry_context.retry_count}')
-
-        if context.retry_context.retry_count == context.retry_context.max_retry_count:
-            logging.info(
-                f"Max retries of {context.retry_context.max_retry_count} for "
-                f"function {context.function_name} has been reached")
-
-    try:
-        chainType = req.params.get('chainType')
-        question = req.params.get('question')
-        indexType = req.params.get('indexType')
-        indexNs = req.params.get('indexNs')
-        logging.info("Input parameters : " + chainType + " " + question + " " + indexType)
-        body = json.dumps(req.get_json())
-    except ValueError:
-        return func.HttpResponse(
-             "Invalid body",
-             status_code=400
-        )
-
-    if body:
-        pinecone.init(
-            api_key=PineconeKey,  # find at app.pinecone.io
-            environment=PineconeEnv  # next to api key in console
-        )
-        result = ComposeResponse(chainType, question, indexType, body, indexNs)
-        return func.HttpResponse(result, mimetype="application/json")
-    else:
-        return func.HttpResponse(
-             "Invalid body",
-             status_code=400
-        )
 
 def ComposeResponse(chainType, question, indexType, jsonData, indexNs):
     values = json.loads(jsonData)['values']
@@ -572,9 +595,55 @@ def TransformValue(chainType, question, indexType, record, indexNs):
             "data": answer
             })
 
-    except:
+    except Exception as error:
+        logging.error("Error in Transform Value: " + str(error))
         return (
             {
             "recordId": recordId,
             "errors": [ { "message": "Could not complete operation for record." }   ]
             })
+
+def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
+    logging.info(f'{context.function_name} HTTP trigger function processed a request.')
+    if hasattr(context, 'retry_context'):
+        logging.info(f'Current retry count: {context.retry_context.retry_count}')
+
+        if context.retry_context.retry_count == context.retry_context.max_retry_count:
+            logging.info(
+                f"Max retries of {context.retry_context.max_retry_count} for "
+                f"function {context.function_name} has been reached")
+
+    try:
+        chainType = req.params.get('chainType')
+        question = req.params.get('question')
+        indexType = req.params.get('indexType')
+        indexNs = req.params.get('indexNs')
+        logging.info("chainType: " + chainType)
+        logging.info("question: " + question)
+        logging.info("indexType: " + indexType)
+        logging.info("indexNs: " + indexNs)
+
+        body = json.dumps(req.get_json())
+    except ValueError:
+        return func.HttpResponse(
+             "Invalid body",
+             status_code=400
+        )
+
+    if body:
+        try:
+            if len(PineconeKey) > 10 and len(PineconeEnv) > 10:
+                pinecone.init(
+                    api_key=PineconeKey,  # find at app.pinecone.io
+                    environment=PineconeEnv  # next to api key in console
+                )
+        except Exception as e:
+            logging.error("Error in Pinecone Init: " + str(e))
+            pass
+        result = ComposeResponse(chainType, question, indexType, body, indexNs)
+        return func.HttpResponse(result, mimetype="application/json")
+    else:
+        return func.HttpResponse(
+             "Invalid body",
+             status_code=400
+        )

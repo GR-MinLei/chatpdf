@@ -6,6 +6,11 @@ export const enum Approaches {
     ReadDecomposeAsk = "rda"
 }
 
+export const enum SearchTypes {
+    Similarity = "similarity",
+    Hybrid = "hybrid",
+    HybridReRank = "hybridrerank"
+}
 
 export type ChatMessage = {
     id: string; // Guid
@@ -21,7 +26,7 @@ export type ChatSession = {
     id: string; // Guid
     type: string; // "Session"
     sessionId: string ; // Guid
-    feature: string; // "chat" || "ask" || "sql" || "chat3"
+    feature: string; // "chat" || "ask" || "sql"
     tokenUsed: number; // Number of tokens in all the message
     name: string;
     timestamp: string; // ISO 8601
@@ -55,8 +60,12 @@ export type AskRequestOverrides = {
     firstSession?: boolean;
     session?: string;
     sessionId?: string;
+    functionCall?: boolean;
     useInternet?: boolean;
     deploymentType?: string;
+    fileName?: string;
+    topics?: string[],
+    searchType?: SearchTypes;
 };
 
 export type AskRequest = {

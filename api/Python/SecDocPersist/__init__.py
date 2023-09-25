@@ -18,7 +18,7 @@ from azure.search.documents.indexes.models import (
     SearchField,  
     SemanticSettings,  
     VectorSearch,  
-    VectorSearchAlgorithmConfiguration,  
+    HnswVectorSearchAlgorithmConfiguration,  
 )
 from azure.search.documents.models import Vector 
 from azure.search.documents.indexes import SearchIndexClient
@@ -95,14 +95,15 @@ def createSearchIndex(indexType, indexName):
                             SimpleField(name="metadata", type=SearchFieldDataType.String, searchable=True, retrievable=True),
                             SearchableField(name="content", type=SearchFieldDataType.String, retrievable=True),
                             # SearchField(name="contentVector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                            #             searchable=True, dimensions=1536, vector_search_configuration="vectorConfig"),
+                            #             searchable=True, vector_search_dimensions=1536, vector_search_configuration="vectorConfig"),
                             SimpleField(name="sourcefile", type="Edm.String", filterable=True, facetable=True),
                 ],
                 semantic_settings=SemanticSettings(
                     configurations=[SemanticConfiguration(
                         name='semanticConfig',
                         prioritized_fields=PrioritizedFields(
-                            title_field=None, prioritized_content_fields=[SemanticField(field_name='content')]))])
+                            title_field=SemanticField(field_name="content"), prioritized_content_fields=[SemanticField(field_name='content')]))],
+                        prioritized_keywords_fields=[SemanticField(field_name='sourcefile')])
                 )
         elif indexType == "cogsearch":
             index = SearchIndex(
@@ -145,14 +146,15 @@ def createSearchIndex(indexType, indexName):
                         SimpleField(name="metadata", type=SearchFieldDataType.String, searchable=True, retrievable=True),
                         SearchableField(name="content", type=SearchFieldDataType.String, retrievable=True),
                         # SearchField(name="contentVector", type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                        #             searchable=True, dimensions=1536, vector_search_configuration="vectorConfig"),
+                        #             searchable=True, vector_search_dimensions=1536, vector_search_configuration="vectorConfig"),
                         SimpleField(name="sourcefile", type="Edm.String", filterable=True, facetable=True),
             ],
             semantic_settings=SemanticSettings(
                 configurations=[SemanticConfiguration(
                     name='semanticConfig',
                     prioritized_fields=PrioritizedFields(
-                        title_field=None, prioritized_content_fields=[SemanticField(field_name='content')]))])
+                        title_field=SemanticField(field_name="content"), prioritized_content_fields=[SemanticField(field_name='content')]))],
+                        prioritized_keywords_fields=[SemanticField(field_name='sourcefile')])
             )
 
         try:
@@ -288,13 +290,17 @@ def chunkAndEmbed(embeddingModelType, indexType, indexName, secDoc, fullPath):
         # Comment for now on not generating embeddings
         #secCommonData['contentVector'] = generateEmbeddings(embeddingModelType, text)
         fullData.append(secCommonData)
+        try:
 
-        searchClient = SearchClient(endpoint=f"https://{SearchService}.search.windows.net/",
-                                    index_name=indexName,
-                                    credential=AzureKeyCredential(SearchKey))
-        results = searchClient.upload_documents(fullData)
-        succeeded = sum([1 for r in results if r.succeeded])
-        logging.info(f"\tIndexed {len(results)} sections, {succeeded} succeeded")
+            searchClient = SearchClient(endpoint=f"https://{SearchService}.search.windows.net/",
+                                        index_name=indexName,
+                                        credential=AzureKeyCredential(SearchKey))
+            results = searchClient.upload_documents(fullData)
+            #succeeded = sum([1 for r in results if r.succeeded])
+            logging.info("Completed Indexing of documents")
+        except Exception as e:
+            logging.error(f"Error indexing documents {e}")
+            raise e
 
     return None
 
@@ -348,7 +354,11 @@ def PersistSecDocs(embeddingModelType, indexType, indexName,  value):
                 createSearchIndex(indexType, indexName)
                 logging.info("Index created")
                 logging.info("Chunk and Embed")
-                chunkAndEmbed(embeddingModelType, indexType, indexName, secDoc, os.path.basename(fileName))
+                try:
+                    chunkAndEmbed(embeddingModelType, indexType, indexName, secDoc, os.path.basename(fileName))
+                except Exception as e:
+                    logging.error(e)
+                    logging.error("Error chunking and embedding")
                 logging.info("Embedding complete")
                 metadata = {'embedded': 'true', 'indexType': indexType, "indexName": indexName}
                 upsertMetadata(OpenAiDocConnStr, SecDocContainer, fileName, metadata)

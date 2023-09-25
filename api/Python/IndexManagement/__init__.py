@@ -33,7 +33,10 @@ from azure.storage.blob import ContainerClient
 import boto3
 from Utilities.envVars import *
 
-redisUrl = "redis://default:" + RedisPassword + "@" + RedisAddress + ":" + RedisPort
+try:
+    redisUrl = "redis://default:" + RedisPassword + "@" + RedisAddress + ":" + RedisPort
+except:
+    logging.error("Chroma or Redis not configured.  Ignoring.")
 
 def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
     logging.info(f'{context.function_name} HTTP trigger function processed a request.')
@@ -61,10 +64,11 @@ def main(req: func.HttpRequest, context: func.Context) -> func.HttpResponse:
         )
 
     if body:
-        pinecone.init(
-            api_key=PineconeKey,  # find at app.pinecone.io
-            environment=PineconeEnv  # next to api key in console
-        )
+        if len(PineconeKey) > 10 and len(PineconeEnv) > 10:
+            pinecone.init(
+                api_key=PineconeKey,  # find at app.pinecone.io
+                environment=PineconeEnv  # next to api key in console
+            )
         result = ComposeResponse(indexType, indexName, blobName, indexNs, operation, body)
         return func.HttpResponse(result, mimetype="application/json")
     else:
@@ -97,7 +101,7 @@ def IndexManagement(indexType, indexName, blobName, indexNs, operation, record):
                     index.delete(delete_all=True, namespace=indexNs)
             elif indexType == "redis":
                 Redis.drop_index(index_name=indexNs, delete_documents=True, redis_url=redisUrl)
-            elif indexType == "cogsearch":
+            elif indexType == "cogsearch" or indexType == "cogsearchvs":
                 deleteSearchIndex(indexNs)
             blobList = getAllBlobs(OpenAiDocConnStr, OpenAiDocContainer)
             for blob in blobList:
